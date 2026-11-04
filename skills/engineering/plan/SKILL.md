@@ -1,0 +1,41 @@
+---
+name: plan
+description: "Trigger: plan a ticket without coding, \"hacé el plan\", \"analizá el ticket\", or a start-task planning phase. Audits it first, then writes analysis.md and plan.md, pressure-tested."
+---
+
+# Plan
+
+Produce the two local planning documents for the ticket: `tasks/<TICKET-ID>/analysis.md` and `tasks/<TICKET-ID>/plan.md` (paths from the config docs layout). No git mutation, no branch, no tracker writes: those belong to the `start-task` skill, which invokes this skill as its planning phase. Ticket ids follow the config ticket-id format; tracker reads go through the tracker's MCP/CLI.
+
+## Execution Steps
+
+1. **Audit the ticket, or prove the last audit fresh.** Check `tasks/<TICKET-ID>/audit.md`; if missing or `--force-audit`, invoke the `audit-ticket` skill. Otherwise all four freshness checks must hold: ticket `updatedAt` unchanged; no newer comment; neighbours unchanged (max of parent/siblings/blockers/related `updatedAt`); `git diff --name-only <head_sha>..HEAD` shares no path with `cited_files` (a non-ancestor `head_sha` fails). Plus a safety net: an audit older than 7 days is stale — it read things these fields do not capture. Writes the flow makes itself are NOT audited content: after a claim or a linked follow-up, refresh the record in the same step (header timestamp + `refreshed_at: <now> (<what changed>)`); a write touching title, description, or ACs is a real change → re-audit. Done with a verdict: PLANNABLE → step 2; PLANNABLE AFTER EDITS → show the edit list and ask whether to plan as written or wait (never silently plan against wording the ticket does not yet carry); BLOCKED / SPLIT FIRST / DROP → report and stop, no files written.
+
+2. **Existing documents?** Both files exist → audit, never rewrite: re-run step 8's checks on the existing `plan.md`, re-verify every `file:line` citation in `analysis.md` at HEAD, compare the ticket's current ACs against what `plan.md` traces to (a changed or added AC with no step is a defect), report defects with fixes or "Audit ok", and ask before editing either file. Only one exists → ask whether to regenerate the missing one or start over. Neither → step 3.
+
+3. **Read before analyzing.** Host `AGENTS.md` conventions, relevant docs for the task domain, the user's `--context` files, then the code the task touches: existing patterns, call chains, data flow, test structure, module impact. Never assume how something works — read the code and documentation first.
+
+4. **Create `analysis.md`**: Summary; Current State (from code, not assumptions; carry the audit's drifted/superseded findings into it); Approach; **Options Considered** (mandatory, ≥2 genuine rows — if the second row is hard to write, that is the signal step 6 must run, not evidence that only one option exists); Impact Analysis; Open Questions.
+
+5. **Sort Open Questions into two kinds.** Answerable from the code — answer them by reading further, keep them written, continue. Blocking, needs a human — product intent, unvalidated scope, dependency on someone else's branch: inform the user and STOP; do NOT create `plan.md`, do not guess at product intent.
+
+6. **Pressure-test the approach, gated.** Skip only when NONE holds: multi-layer change; Open Questions non-empty; a golden/scenario expectation rewritten or a migration added; the ticket prescribes the fix site and the code did not confirm that site; only one defensible Options row. Record the skip in one line under Options Considered — recorded, never silent. When it runs, dispatch exactly three independent read-only sub-agents in one wave (three is the ceiling; no fourth), each prompted with the hypothesis, "cite `file:line` for every claim — uncited claims are discarded at synthesis", and "do not invoke any other skill and do not spawn sub-agents of your own" — read-only limits do not stop a reader from fanning out again, and nested fan-out returns a correlated pile instead of the independent positions this step exists for. Lenses: **first principles** — is the defect actually at the layer this approach touches? Name the earliest broken invariant; may reframe the ticket. **Contrarian** — assume this ships and is wrong: what breaks? Name blast radius by file; separate reversible from irreversible (migrations, golden rewrites, published event shapes). **Executor** — the smallest shippable step and its order; name the command or test file that verifies each locally. Synthesis is yours, not a sub-agent's: fill the Options rows from the lens output; if a lens shows wrong framing, say so to the user and wait before writing `plan.md` — never silently re-scope a validated ticket; lens output beyond the ticket's ACs goes under `Follow-up candidates` in `analysis.md`, never into `plan.md`.
+
+7. **Create `plan.md`**: numbered steps with `[ ]` checkboxes, concrete and actionable; the last step is always verification running the validation commands from config. Under each step heading add one line `Traces to:` with the AC it serves. Three outcomes — traces to an AC: keep it; traces to no AC but the ACs cannot be met without it (a migration, a fixture, a compiler-forced rename): keep it with the dependency NAMED on the same line — scaffolding is legitimate, unnamed scaffolding is where scope hides; traces to no AC and nothing needs it: move it to `Follow-up candidates` in `analysis.md`, not `plan.md`. This is the cheapest point to delete scope: a line here, an argument in review, a revert after merge.
+
+8. **Verify the assembled plan before presenting it.** Verified facts do not compose into a verified plan on their own — run the four whole-plan checks on the draft: (1) AC→step matrix, the reverse of step 7: for every AC walk its NOUNS (each thing persisted, published, rejected, returned) and name the step that produces it — only this direction catches an AC noun with no step; (2) dependency walk: each step may only consume what an earlier step constructs, composition dependencies included — reorder now, it costs a paragraph here and a rewrite in development; (3) no unpinned decisions: "return the declared response" without naming the status is a design question hiding in a checklist — pin it, or move it to Open Questions and stop; (4) commands verified, not remembered: every verify command checked this session against a manifest or test file — a wrong path silently turns "verified" into "assumed". Record the outcome as one line at the bottom of `plan.md`: `Assembled-plan check: ...` — naming the defects found and fixed. Finding defects is the step working; that record is what proves the pass actually ran.
+
+9. **Hand off.** Present the step list (one line per step, with its `Traces to:`) and the open follow-up candidates. Offer the next step in one line: the `start-task` skill when the ticket is not yet claimed; when `start-task` invoked this skill, return to it directly without asking.
+
+## Important rules
+
+- **Audit before analysis** — the four freshness checks plus the 7-day cap; BLOCKED/SPLIT FIRST/DROP ends this skill with nothing written.
+- **`analysis.md` always carries the Options Considered table**; lens claims without `file:line` citations are discarded at synthesis; exactly three lenses — no peer-review round, no expansionist lens, no zero-context outsider lens.
+- **The ticket's AC list, not `plan.md`, is the authority** on what was asked for — `plan.md` is a derivation, and steps 7-8 keep the derivation honest (an over-scoped plan launders scope into later spec checks).
+- **`tasks/` is local-only** — never staged, never committed. No git mutation, no tracker writes, no branch.
+
+## Adaptation
+
+- Personalize in this read order, stopping at the first source that answers: (1) host `AGENTS.md` conventions, (2) `.skills/config.md` — the host repo's one canonical config (ticket tracker, ticket id format, triage source, branch model, docs layout, validation commands), (3) `.skills/plan.local.md` — per-skill overrides.
+- Overrides refine the steps; they never change this skill's core behavior or completion criteria.
+- Tracker differences (read-only fetches for the audit): youtrack — issue + comments + link queries. linear — issue with relations + comments. jira — issue with `issuelinks` + comments. github — issue timeline/linked issues. file-based — read the ticket file's comment/relation sections.
