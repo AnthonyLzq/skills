@@ -9,6 +9,9 @@ install.sh — install AnthonyLzq Skills into agent skill directories.
 
 Usage: ./install.sh [options]
 
+Skills live in skills/<category>/<name>/SKILL.md and install flat: the whole
+<name> folder is linked (or copied) under <name> in the target dir.
+
 Options:
   --agent <auto|opencode|claude|copilot>  Target agent. Default: auto — every
                                           agent whose target dir can be created.
@@ -17,7 +20,8 @@ Options:
                                           Default DIR: current directory. This
                                           is also the default scope when neither
                                           --global nor --project is given.
-  --skills all|<name[,name...]>           Skills to install. Default: all.
+  --skills all|<name[,name...]>           Skills to install. Default: all. Give
+                                          <category>/<name> to disambiguate.
   --copy                                  Copy instead of symlinking.
   --unlink                                Remove previously installed symlinks
                                           for the selected agents and scope.
@@ -31,8 +35,7 @@ Scopes:
   claude     ~/.claude/skills              <DIR>/.claude/skills
   copilot    none (project only)           <DIR>/.github/skills
 
-Skills are symlinked (or copied with --copy) into the target dir, one entry per
-skills/<name> folder. Re-runs are idempotent: nothing already identical is done.
+Re-runs are idempotent: already-identical targets are left alone.
 
 Personalization: in the host repo, add .skills/<skill>.local.md to override
 host-specific values. See README.md.
@@ -105,13 +108,76 @@ fi
 skills_root="$repo_root/skills"
 valid_name() { case "$1" in "-"*|*[!a-z0-9_-]*|"") return 1 ;; esac }
 skill_dir_ok() { [ -d "$1" ] && [ -f "$1/SKILL.md" ]; }
+
+# List every skill as category/name, comma-joined.
 available_names() {
   [ -d "$skills_root" ] || { printf 'none yet'; return; }
-  out=
-  for s in "$skills_root"/*; do
-    skill_dir_ok "$s" && out="${out:+$out, }${s##*/}"
+  local out="" cat_dir s_dir
+  for cat_dir in "$skills_root"/*; do
+    [ -d "$cat_dir" ] || continue
+    for s_dir in "$cat_dir"/*; do
+      skill_dir_ok "$s_dir" && out="${out:+$out, }${s_dir#"$skills_root"/}"
+    done
   done
   printf '%s' "${out:-none yet}"
+}
+
+# Walk skills/ and collect every skills/<category>/<name> with a SKILL.md.
+declare -a paths=()
+discover_all() {
+  local cat_dir s_dir cat name
+  for cat_dir in "$skills_root"/*; do
+    [ -d "$cat_dir" ] || continue
+    cat="${cat_dir##*/}"
+    for s_dir in "$cat_dir"/*; do
+      [ -d "$s_dir" ] || continue
+      name="${s_dir##*/}"
+      skill_dir_ok "$s_dir" || continue
+      valid_name "$cat" || die "invalid category folder name: $cat"
+      valid_name "$name" || die "invalid skill folder name: $cat/$name"
+      paths+=("$cat/$name")
+    done
+  done
+  if [ "${#paths[@]}" -eq 0 ]; then
+    printf 'Nothing to do: no skills found in %s — add skills/<category>/<name>/SKILL.md first.\n' "$skills_root"
+    exit 0
+  fi
+}
+
+# Resolve one --skills entry (plain <name> or <category>/<name>) to category/name.
+resolve_one() {
+  local spec="$1"
+  case "$spec" in
+    */*)
+      local cat="${spec%%/*}" name="${spec##*/}"
+      valid_name "$cat" && valid_name "$name" || die "invalid skill ref '$spec'"
+      skill_dir_ok "$skills_root/$cat/$name" || die "unknown skill '$spec' (available: $(available_names))"
+      printf '%s\n' "$spec"
+      return ;;
+  esac
+  local match="" s_dir found=0
+  for s_dir in "$skills_root"/*/"$spec"; do
+    [ -d "$s_dir" ] && [ -f "$s_dir/SKILL.md" ] || continue
+    match="${s_dir#"$skills_root"/}"
+    found=$((found + 1))
+  done
+  case "$found" in
+    0) die "unknown skill '$spec' (available: $(available_names))" ;;
+    1) printf '%s\n' "$match" ;;
+    *) die "ambiguous skill name '$spec' — it exists in several categories; use category/name" ;;
+  esac
+}
+
+# A skill name must be unique across categories: targets install flat under <name>.
+check_duplicate_names() {
+  local i j n="${#paths[@]}"
+  for ((i = 0; i < n; i++)); do
+    for ((j = i + 1; j < n; j++)); do
+      if [ "${paths[i]##*/}" = "${paths[j]##*/}" ]; then
+        die "skill name '${paths[i]##*/}' exists in more than one category (${paths[i]}, ${paths[j]}); make skill names unique"
+      fi
+    done
+  done
 }
 
 declare -a agents=()
@@ -126,30 +192,18 @@ else
   agents=("$agent")
 fi
 
-declare -a skills=()
 if [ "$skills_spec" = all ]; then
-  for s in "$skills_root"/*; do
-    if skill_dir_ok "$s"; then
-      name="${s##*/}"
-      valid_name "$name" || die "invalid skill folder name: $name"
-      skills+=("$name")
-    fi
-  done
-  if [ "${#skills[@]}" -eq 0 ]; then
-    printf 'Nothing to do: no skills found in %s — add skills/<name>/SKILL.md first.\n' "$skills_root"
-    exit 0
-  fi
+  discover_all
 else
   IFS=',' read -r -a wanted <<< "$skills_spec"
   for name in "${wanted[@]}"; do
     name="${name// /}"
     [ -n "$name" ] || continue
-    valid_name "$name" || die "invalid skill name '$name'"
-    skill_dir_ok "$skills_root/$name" || die "unknown skill '$name' (available: $(available_names))"
-    skills+=("$name")
+    paths+=("$(resolve_one "$name")")
   done
-  [ "${#skills[@]}" -gt 0 ] || die "no usable skills in --skills '$skills_spec'"
+  [ "${#paths[@]}" -gt 0 ] || die "no usable skills in --skills '$skills_spec'"
 fi
+check_duplicate_names
 
 dest_for() {
   local a="$1"
@@ -175,19 +229,19 @@ if [ "$unlink" -eq 1 ]; then
   for a in "${agents[@]}"; do
     dir=$(dest_for "$a")
     removed="" skipped=""
-    for s in "${skills[@]}"; do
-      link="$dir/$s"
+    for p in "${paths[@]}"; do
+      link="$dir/${p##*/}"
       if [ -L "$link" ]; then
-        if [ "$(readlink -f "$link")" = "$(readlink -f "$skills_root/$s")" ]; then
+        if [ "$(readlink -f "$link")" = "$(readlink -f "$skills_root/$p")" ]; then
           rm "$link"
-          removed="${removed:+$removed, }$s"
+          removed="${removed:+$removed, }$p"
         else
           warn "symlink from another source, leaving untouched: $link"
-          skipped="${skipped:+$skipped, }$s"
+          skipped="${skipped:+$skipped, }$p"
         fi
       elif [ -e "$link" ]; then
         warn "not a symlink from this repo, leaving as-is: $link"
-        skipped="${skipped:+$skipped, }$s"
+        skipped="${skipped:+$skipped, }$p"
       fi
     done
     rows+=("$a|$scope|$dir|${removed:-none}|${skipped:-none}")
@@ -208,12 +262,12 @@ for a in "${agents[@]}"; do
   dir=$(dest_for "$a")
   mkdir -p "$dir" 2>/dev/null || die "cannot create target dir: $dir"
   installed="" already="" refused=""
-  for s in "${skills[@]}"; do
-    src="$skills_root/$s"
-    dst="$dir/$s"
+  for p in "${paths[@]}"; do
+    src="$skills_root/$p"
+    dst="$dir/${p##*/}"
     if [ -L "$dst" ]; then
       if [ "$(readlink -f "$dst")" = "$(readlink -f "$src")" ]; then
-        already="${already:+$already, }$s"
+        already="${already:+$already, }$p"
         continue
       fi
       if [ "$force" -eq 1 ]; then
@@ -221,13 +275,13 @@ for a in "${agents[@]}"; do
         rm "$dst"
       else
         warn "refusing to touch foreign symlink $dst (use --force to replace it)"
-        refused="${refused:+$refused, }$s"
+        refused="${refused:+$refused, }$p"
         refused_total=$((refused_total + 1))
         continue
       fi
     elif [ -e "$dst" ]; then
       if [ "$mode" = copy ] && [ -d "$dst" ] && diff -r -q "$src" "$dst" >/dev/null 2>&1; then
-        already="${already:+$already, }$s"
+        already="${already:+$already, }$p"
         continue
       fi
       if [ "$force" -eq 1 ]; then
@@ -236,7 +290,7 @@ for a in "${agents[@]}"; do
         rm -rf "$dst"
       else
         warn "refusing to overwrite existing target: $dst (re-run with --force)"
-        refused="${refused:+$refused, }$s"
+        refused="${refused:+$refused, }$p"
         refused_total=$((refused_total + 1))
         continue
       fi
@@ -250,7 +304,7 @@ for a in "${agents[@]}"; do
     else
       cp -R "$src" "$dst"
     fi
-    installed="${installed:+$installed, }$s"
+    installed="${installed:+$installed, }$p"
     total_installed=$((total_installed + 1))
   done
   rows+=("$a|$scope|$dir|${installed:-none}|${already:-none}|${refused:-none}")

@@ -15,5 +15,5 @@ description: "Trigger: {essential trigger words}. {What this skill does}."
 
 ## Adaptation
 
-- Read the host repo's `AGENTS.md` first and apply its conventions — ticket tracker, branch model, commands — to the steps above.
-- If `.skills/{skill-name}.local.md` exists in the host repo, apply it as host-specific overrides. Overrides refine the steps; they never change this skill's core behavior or completion criteria.
+- Personalize in this read order, stopping at the first source that answers: (1) host `AGENTS.md` conventions, (2) `.skills/config.md` — the host repo's one canonical config (ticket tracker, ticket id format, triage source, branch model, docs layout, validation commands), (3) `.skills/{skill-name}.local.md` — per-skill overrides.
+- Overrides refine the steps; they never change this skill's core behavior or completion criteria.
